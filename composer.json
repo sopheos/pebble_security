@@ -1,6 +1,7 @@
 {
     "name": "sopheos/pebble_security",
     "description": "Token, JWT, Hash and more by sopheos",
+    "license": "MIT",
     "require": {
         "php": ">=8.1.0"
     },
