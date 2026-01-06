@@ -8,13 +8,22 @@ namespace Pebble\Security;
  */
 class JWT
 {
+    const HS256 = 'HS256';
+    const HS384 = 'HS384';
+    const HS512 = 'HS512';
+    const RS256 = 'RS256';
+    const RS384 = 'RS384';
+    const RS512 = 'RS512';
+    const ES256 = 'ES256';
+    const ES384 = 'ES384';
+    const ES512 = 'ES512';
 
     /**
      * When checking nbf, iat or expiration times,
      * we want to provide some extra leeway time to
      * account for clock skew.
      */
-    public static $leeway = 30;
+    public static int $leeway = 30;
 
     /**
      * Allow the current timestamp to be specified.
@@ -22,81 +31,91 @@ class JWT
      *
      * Will default to PHP time() value if null.
      */
-    public static $timestamp = null;
+    public static int $timestamp = 0;
 
     /**
      * Supported algorithm for HMAC
      */
-    public static $algs = [
-        'HS256' => 'sha256',
-        'HS384' => 'sha384',
-        'HS512' => 'sha512'
+    private static $algs = [
+        self::HS256 => 'sha256',
+        self::HS384 => 'sha384',
+        self::HS512 => 'sha512',
+        self::RS256 => OPENSSL_ALGO_SHA256,
+        self::RS384 => OPENSSL_ALGO_SHA384,
+        self::RS512 => OPENSSL_ALGO_SHA512,
+        self::ES256 => OPENSSL_ALGO_SHA256,
+        self::ES384 => OPENSSL_ALGO_SHA384,
+        self::ES512 => OPENSSL_ALGO_SHA512,
     ];
 
     /**
-     * Decodes a JWT string into a PHP object.
+     * Converts and signs a PHP object or array into a JWT string.
+     *
+     * @param array $payload Payload
+     * @param string $key The secret key
+     * @param string $algo The signing algorithm.
+     * @return string
+     */
+    public static function encode(array $payload, string $key, string $algo = self::HS256)
+    {
+        $header = ['typ' => 'JWT', 'alg' => $algo];
+
+        $headb64 = self::urlsafeB64Encode(self::jsonEncode($header));
+        $bodyb64 = self::urlsafeB64Encode(self::jsonEncode($payload));
+
+        $signature  = self::sign("{$headb64}.{$bodyb64}", $key, $algo);
+        $cryptob64 = self::urlsafeB64Encode($signature);
+
+        return "{$headb64}.{$bodyb64}.{$cryptob64}";
+    }
+
+    /**
+     * Decodes a JWT string into a PHP array.
      *
      * @param string $jwt The JWT
      * @param string|null $key  The secret key
-     * @param BOOL $verify Don't skip verification process
-     * @return object The JWT's payload as a PHP object
+     * @param bool $verify If false, skip verification process
+     * @return object The JWT's payload as a PHP array
      * @throws Exception Provided JWT was invalid
      */
-    public static function decode($jwt, $key)
+    public static function decode(string $jwt, string $key, bool $verify = true)
     {
-        $timestamp = is_null(static::$timestamp) ? time() : static::$timestamp;
-
-        if (empty($key)) {
+        if (! $key) {
             throw new Exception('Key may not be empty');
         }
 
-        if (!is_string($jwt)) {
-            throw new Exception('Wrong number of segments');
-        }
+        list($headb64, $bodyb64, $header, $payload, $sign) = self::parse($jwt);
 
-        $tks = explode('.', $jwt);
-        if (count($tks) != 3) {
-            throw new Exception('Wrong number of segments');
-        }
-
-        list($headb64, $bodyb64, $cryptob64) = $tks;
-
-        if (($header = JWT::jsonDecode(JWT::urlsafeB64Decode($headb64))) === null) {
-            throw new Exception('Invalid segment encoding');
-        }
-
-        if (($payload = JWT::jsonDecode(JWT::urlsafeB64Decode($bodyb64))) === null) {
-            throw new Exception('Invalid segment encoding');
-        }
-
-        if (empty($header->alg)) {
+        if (! ($alg = self::a($header, 'alg'))) {
             throw new Exception('Empty algorithm');
         }
 
-        if (empty(static::$algs[$header->alg])) {
+        if (! self::a(self::$algs, $alg)) {
             throw new Exception('Algorithm not supported');
         }
 
-        $sig = JWT::urlsafeB64Decode($cryptob64);
-        if ($sig != JWT::sign("$headb64.$bodyb64", $key, $header->alg)) {
+        // Check signature
+        if ($verify && !self::verify("{$headb64}.{$bodyb64}", $sign, $key, $alg)) {
             throw new Exception('Signature verification failed');
         }
 
+        $timestamp = self::$timestamp ?: time();
+
         // Check if the nbf if it is defined. This is the time that the
         // token can actually be used. If it's not yet that time, abort.
-        if (isset($payload->nbf) && $payload->nbf > ($timestamp + static::$leeway)) {
-            throw new Exception('Cannot handle token prior to ' . date('c', $payload->nbf));
+        if (($nbf = self::a($payload, 'nbf')) && $nbf > ($timestamp + self::$leeway)) {
+            throw new Exception('Cannot handle token prior to ' . date('c', $nbf));
         }
 
         // Check that this token has been created before 'now'. This prevents
         // using tokens that have been created for later use (and haven't
         // correctly used the nbf claim).
-        if (isset($payload->iat) && $payload->iat > ($timestamp + static::$leeway)) {
-            throw new Exception('Cannot handle token prior to ' . date('c', $payload->iat));
+        if (($iat = self::a($payload, 'iat')) && $iat > ($timestamp + self::$leeway)) {
+            throw new Exception('Cannot handle token prior to ' . date('c', $iat));
         }
 
         // Check if this token has expired.
-        if (isset($payload->exp) && ($timestamp - static::$leeway) >= $payload->exp) {
+        if (($exp = self::a($payload, 'exp')) && ($timestamp - self::$leeway) >= $exp) {
             throw new Exception('Expired token');
         }
 
@@ -104,128 +123,34 @@ class JWT
     }
 
     /**
-     * Converts and signs a PHP object or array into a JWT string.
+     * Parse JWT string
      *
-     * @param object|array $payload PHP object or array
-     * @param string       $key     The secret key
-     * @param string       $algo    The signing algorithm. Supported
-     *                              algorithms are 'HS256', 'HS384' and 'HS512'
-     * @return string
+     * @param string $jwt
+     * @return array
      */
-    public static function encode($payload, $key, $algo = 'HS256')
+    public static function parse(string $jwt): array
     {
-        $header = ['typ' => 'JWT', 'alg' => $algo];
+        $tks = explode('.', self::getBearerToken($jwt));
 
-        $segments      = [];
-        $segments[]    = JWT::urlsafeB64Encode(JWT::jsonEncode($header));
-        $segments[]    = JWT::urlsafeB64Encode(JWT::jsonEncode($payload));
-        $signing_input = implode('.', $segments);
-
-        $signature  = JWT::sign($signing_input, $key, $algo);
-        $segments[] = JWT::urlsafeB64Encode($signature);
-
-        return implode('.', $segments);
-    }
-
-    /**
-     * Sign a string with a given key and algorithm.
-     *
-     * @param string $msg The message to sign
-     * @param string $key The secret key
-     * @param string $alg The signing algorithm. Supported
-     *                       algorithms are 'HS256', 'HS384' and 'HS512'
-     *
-     * @return string An encrypted message
-     * @throws Exception
-     */
-    public static function sign($msg, $key, $alg = 'HS256')
-    {
-        if (empty(static::$algs[$alg])) {
-            throw new Exception('Algorithm not supported');
+        if (count($tks) != 3) {
+            throw new Exception('Wrong number of segments');
         }
 
-        return hash_hmac(static::$algs[$alg], $msg, $key, true);
-    }
+        list($headb64, $bodyb64, $cryptob64) = $tks;
 
-    /**
-     * Decode a JSON string into a PHP object.
-     *
-     * @param string $input JSON string
-     * @return object Object representation of JSON string
-     * @throws Exception
-     */
-    public static function jsonDecode($input)
-    {
-        $obj   = json_decode($input);
-        if (function_exists('json_last_error') && $errno = json_last_error()) {
-            JWT::handleJsonError($errno);
-        } else if ($obj === null && $input !== 'null') {
-            throw new Exception('Null result with non-null input');
+        if (!($header = self::jsonDecode(self::urlsafeB64Decode($headb64)))) {
+            throw new Exception('Invalid segment encoding');
         }
-        return $obj;
-    }
 
-    /**
-     * Encode a PHP object into a JSON string.
-     *
-     * @param object|array $input A PHP object or array
-     * @return string JSON representation of the PHP object or array
-     * @throws Exception
-     */
-    public static function jsonEncode($input)
-    {
-        $json  = json_encode($input);
-        if (function_exists('json_last_error') && $errno = json_last_error()) {
-            JWT::handleJsonError($errno);
-        } else if ($json === 'null' && $input !== null) {
-            throw new Exception('Null result with non-null input');
+        if (!($payload = self::jsonDecode(self::urlsafeB64Decode($bodyb64)))) {
+            throw new Exception('Invalid segment encoding');
         }
-        return $json;
-    }
 
-    /**
-     * Decode a string with URL-safe Base64.
-     *
-     * @param string $input A Base64 encoded string
-     * @return string A decoded string
-     */
-    public static function urlsafeB64Decode($input)
-    {
-        $remainder = mb_strlen($input) % 4;
-        if ($remainder) {
-            $padlen = 4 - $remainder;
-            $input  .= str_repeat('=', $padlen);
+        if (!($signature = self::urlsafeB64Decode($cryptob64))) {
+            throw new Exception('Invalid segment encoding');
         }
-        return base64_decode(strtr($input, '-_', '+/'));
-    }
 
-    /**
-     * Encode a string with URL-safe Base64.
-     *
-     * @param string $input The string you want encoded
-     * @return string The base64 encode of what you passed in
-     */
-    public static function urlsafeB64Encode($input)
-    {
-        return str_replace('=', '', strtr(base64_encode($input), '+/', '-_'));
-    }
-
-    /**
-     * Helper method to create a JSON error.
-     *
-     * @param int $errno An error number from json_last_error()
-     * @return void
-     */
-    private static function handleJsonError($errno)
-    {
-        $messages = array(
-            JSON_ERROR_DEPTH     => 'Maximum stack depth exceeded',
-            JSON_ERROR_CTRL_CHAR => 'Unexpected control character found',
-            JSON_ERROR_SYNTAX    => 'Syntax error, malformed JSON'
-        );
-        throw new Exception(
-            isset($messages[$errno]) ? $messages[$errno] : 'Unknown JSON error: ' . $errno
-        );
+        return [$headb64, $bodyb64, $cryptob64, $header, $payload, $signature];
     }
 
     /**
@@ -243,5 +168,79 @@ class JWT
         }
 
         return $token;
+    }
+
+    /**
+     * Sign a string
+     *
+     * @param string $msg The message to sign
+     * @param string $key The secret key
+     * @param string $alg The signing algorithm. Supported
+     *                       algorithms are 'HS256', 'HS384' and 'HS512'
+     *
+     * @return string An encrypted message
+     * @throws Exception
+     */
+    public static function sign($msg, $key, $alg = self::HS256)
+    {
+        if (! ($algo = self::a(self::$algs, $alg))) {
+            throw new Exception('Algorithm not supported');
+        }
+
+        return hash_hmac(static::$algs[$alg], $msg, $key, true);
+    }
+
+    /**
+     * Verify a signature
+     *
+     * @param string $data
+     * @param string $signature
+     * @param string $key
+     * @param string $alg
+     * @return boolean
+     * @throws Exception
+     */
+    public static function verify(string $data, string $signature, string $key, string $alg = self::HS256): bool
+    {
+        if (! ($algo = self::a(self::$algs, $alg))) {
+            throw new Exception('Algorithm not supported');
+        }
+
+        if (str_contains($alg, 'HS')) {
+            return hash_hmac($algo, $data, $key, true) === $signature;
+        }
+
+        return openssl_verify($data, $signature, $key, $algo) === 1;
+    }
+
+    private static function jsonDecode(string $input): array
+    {
+        $out = json_decode($input, true);
+        return is_array($out) ? $out : [];
+    }
+
+    private static function jsonEncode(array $input): string
+    {
+        return json_encode($input);
+    }
+
+    private static function urlsafeB64Decode(string $input): string
+    {
+        $remainder = mb_strlen($input) % 4;
+        if ($remainder) {
+            $padlen = 4 - $remainder;
+            $input  .= str_repeat('=', $padlen);
+        }
+        return base64_decode(strtr($input, '-_', '+/'));
+    }
+
+    private static function urlsafeB64Encode(string $input): string
+    {
+        return str_replace('=', '', strtr(base64_encode($input), '+/', '-_'));
+    }
+
+    private static function a(array $input, string $key): mixed
+    {
+        return $input[$key] ?? $input[mb_strtoupper($key)] ?? null;
     }
 }
