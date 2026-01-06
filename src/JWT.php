@@ -84,7 +84,7 @@ class JWT
             throw new Exception('Key may not be empty');
         }
 
-        list($headb64, $bodyb64, $header, $payload, $sign) = self::parse($jwt);
+        list($headb64, $bodyb64,, $header, $payload, $sign) = self::parse($jwt);
 
         if (! ($alg = self::a($header, 'alg'))) {
             throw new Exception('Empty algorithm');
