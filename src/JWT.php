@@ -175,9 +175,7 @@ class JWT
      *
      * @param string $msg The message to sign
      * @param string $key The secret key
-     * @param string $alg The signing algorithm. Supported
-     *                       algorithms are 'HS256', 'HS384' and 'HS512'
-     *
+     * @param string $alg The signing algorithm
      * @return string An encrypted message
      * @throws Exception
      */
@@ -187,7 +185,16 @@ class JWT
             throw new Exception('Algorithm not supported');
         }
 
-        return hash_hmac(static::$algs[$alg], $msg, $key, true);
+        if (self::isHmac($alg)) {
+            return self::hmac($algo, $msg, $key);
+        }
+
+        $signature = '';
+        if (!openssl_sign($msg, $signature, $$key, $algo)) {
+            throw new Exception('Error signing the JWT');
+        }
+
+        return $signature;
     }
 
     /**
@@ -200,17 +207,17 @@ class JWT
      * @return boolean
      * @throws Exception
      */
-    public static function verify(string $data, string $signature, string $key, string $alg = self::HS256): bool
+    public static function verify(string $msg, string $signature, string $key, string $alg = self::HS256): bool
     {
         if (! ($algo = self::a(self::$algs, $alg))) {
             throw new Exception('Algorithm not supported');
         }
 
-        if (str_contains($alg, 'HS')) {
-            return hash_hmac($algo, $data, $key, true) === $signature;
+        if (self::isHmac($alg)) {
+            return self::hmac($algo, $msg, $key) === $signature;
         }
 
-        return openssl_verify($data, $signature, $key, $algo) === 1;
+        return openssl_verify($msg, $signature, $key, $algo) === 1;
     }
 
     private static function jsonDecode(string $input): array
@@ -242,5 +249,15 @@ class JWT
     private static function a(array $input, string $key): mixed
     {
         return $input[$key] ?? $input[mb_strtoupper($key)] ?? null;
+    }
+
+    private static function isHmac(string $alg)
+    {
+        return str_contains($alg, 'HS');
+    }
+
+    private static function hmac(string $algo, string $msg, string $key): string
+    {
+        return hash_hmac($algo, $msg, $key, true);
     }
 }
