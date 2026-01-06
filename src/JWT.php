@@ -190,7 +190,7 @@ class JWT
         }
 
         $signature = '';
-        if (!openssl_sign($msg, $signature, $$key, $algo)) {
+        if (!openssl_sign($msg, $signature, $key, $algo)) {
             throw new Exception('Error signing the JWT');
         }
 
