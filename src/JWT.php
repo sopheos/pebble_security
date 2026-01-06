@@ -75,10 +75,10 @@ class JWT
      * @param string $jwt The JWT
      * @param string|null $key  The secret key
      * @param bool $verify If false, skip verification process
-     * @return object The JWT's payload as a PHP array
+     * @return array The JWT's payload as a PHP array
      * @throws Exception Provided JWT was invalid
      */
-    public static function decode(string $jwt, string $key, bool $verify = true)
+    public static function decode(string $jwt, string $key, bool $verify = true): array
     {
         if (! $key) {
             throw new Exception('Key may not be empty');

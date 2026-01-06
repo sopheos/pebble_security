@@ -60,12 +60,10 @@ class Token
      */
     public function add(string $name, $value): static
     {
+        $this->payload[$name] = $value;
+
         if ($value === null) {
-            if (array_key_exists($name, $this->payload)) {
-                unset($this->payload[$name]);
-            }
-        } else {
-            $this->payload[$name] = $value;
+            unset($this->payload[$name]);
         }
 
         return $this;
@@ -173,11 +171,11 @@ class Token
             throw TokenException::invalid();
         }
 
-        if ($this->hash && $this->hash !== ($data->hash ?? null)) {
+        if ($this->hash && $this->hash !== ($data['hash'] ?? null)) {
             throw TokenException::invalid();
         }
 
-        $this->init((array) $data);
+        $this->init($data);
 
         return $this;
     }
