@@ -54,11 +54,27 @@ class JWT
      * @param array $payload Payload
      * @param string $key The secret key
      * @param string $algo The signing algorithm.
+     * @param string $keyId kid
+     * @param array $head An array with header elements to attach
+     *
      * @return string
      */
-    public static function encode(array $payload, string $key, string $algo = self::HS256)
-    {
+    public static function encode(
+        array $payload,
+        string $key,
+        string $algo = self::HS256,
+        ?string $keyId = null,
+        ?array $head = null
+    ) {
         $header = ['typ' => 'JWT', 'alg' => $algo];
+
+        if ($keyId) {
+            $header['kid'] = $keyId;
+        }
+
+        if ($head) {
+            $header = array_merge($header, $head);
+        }
 
         $headb64 = self::urlsafeB64Encode(self::jsonEncode($header));
         $bodyb64 = self::urlsafeB64Encode(self::jsonEncode($payload));
