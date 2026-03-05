@@ -244,7 +244,7 @@ class JWT
 
     private static function jsonEncode(array $input): string
     {
-        return json_encode($input);
+        return json_encode($input, JSON_UNESCAPED_SLASHES);
     }
 
     private static function urlsafeB64Decode(string $input): string
