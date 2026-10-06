@@ -1,64 +1,66 @@
 # CLAUDE.md — pebble_security
 
-Ce fichier guide Claude Code quand il **maintient** cette librairie. Pour l'**utiliser** depuis un projet, voir le skill [`skills/pebble-security/`](skills/pebble-security/SKILL.md).
+This file guides Claude Code when **maintaining** this library. To **use** it from a project, see the skill [`skills/pebble-security/`](skills/pebble-security/SKILL.md).
 
-## Rôle
+## Scope
 
-`sopheos/pebble_security`, namespace `Pebble\Security\`, PHP >= 8.1, extensions `openssl` et `mbstring`, aucune dépendance Composer runtime. La lib fournit :
-- `JWT` : encodage/décodage JWT (HS*, RS*, ES*), sans dépendance externe ;
-- `Token` : surcouche applicative de `JWT` (uuid, preuve liée à un appareil, `iat`/`exp`) ;
-- `Crypto` : chiffrement symétrique `openssl_encrypt` en base64 ;
-- `Password` : `password_hash`/`password_verify` en bcrypt ;
-- `Hash` : hachage par longueur, chaînes aléatoires, « UUID », OTP, hachage d'email.
+`sopheos/pebble_security`, namespace `Pebble\Security\`, PHP >= 8.1, extensions `openssl` and `mbstring`, no runtime Composer dependency. The library provides:
+- `JWT`: JWT encoding/decoding (HS*, RS*, ES*), without external dependency;
+- `Token`: application layer over `JWT` (uuid, device-bound proof, `iat`/`exp`);
+- `Crypto`: authenticated `aes-256-gcm` encryption and static helpers (hashing by length, random, UUID v7, OTP, email hashing, bcrypt);
+- `Password`: deprecated, delegates to `Crypto::passwordHash()`/`passwordVerify()`;
+- `Hash`: deprecated, each method delegates to `Crypto`.
 
-La lib contient plusieurs faiblesses de sécurité connues (voir [`TODO.md`](TODO.md), section « Sécurité »). Elles sont figées par des tests, pas corrigées.
 
-## Commandes
+## Commands
 
 ```bash
 composer install
-vendor/bin/phpunit            # toute la suite
+vendor/bin/phpunit            # whole suite
 vendor/bin/phpunit --filter JWTTest
 ```
 
-## Carte de `src/`
+## Map of `src/`
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `JWT.php` | `encode()`, `decode()` (signature puis `nbf`/`iat`/`exp` avec `$leeway`), `parse()`, `sign()`, `verify()`, `getBearerToken()`. Statiques `$leeway` et `$timestamp` |
-| `Token.php` | Payload mutable (`add`/`del`/`get`), `generate($exp)` et `import($jwt)` qui passe toujours l'algorithme attendu à `JWT::decode()` |
-| `TokenException.php` | `token_required` et `token_invalid` |
-| `Exception.php` | Exception levée par `JWT` |
-| `Crypto.php` | `encode()`/`decode()` en `aes-256-cbc` par défaut, IV dérivé de la clé |
-| `Password.php` | bcrypt, `setCost()`, `setSalt()` (sans effet depuis PHP 8) |
-| `Hash.php` | `make()` (md5/sha1/sha256/sha512 selon la longueur), `salt()`, `random()`, `uuid()`, `otp()`, `email()` |
+| `JWT.php` | `encode()`, `decode()` (signature then `nbf`/`iat`/`exp` with `$leeway`, read by `numericDate()`: must be numbers, `0` counts), `parse()`, `sign()`, `verify()`, `getBearerToken()`. `verify()` binds the algorithm family to the key (`isPem()`, `isKeyOf()`): HS* refuses a PEM, RS*/ES* require a public key of the right type and curve. Algorithm names are normalised to upper case by `alg()` (lower case accepted). Header parameter and claim names are read in lower case only (`$header['alg']`, `$payload['exp']`). Statics `$leeway` and `$timestamp`. `hmac()` raises a one-time `E_USER_DEPRECATED` (`$shortKeyWarned`) for a secret shorter than the hash output. ES*: `sign()` converts openssl's DER to R||S (`derToRaw()`), `verify()` converts back (`rawToDer()`) and falls back to DER for legacy tokens |
+| `Token.php` | Mutable payload (`add`/`del`/`get`), `generate($exp)` (keeps an existing `exp` when `$exp` is 0, on purpose) and `import($jwt)`, which always passes the expected algorithm to `JWT::decode()` |
+| `TokenException.php` | `token_required` and `token_invalid` |
+| `Exception.php` | Exception thrown by `JWT` |
+| `Crypto.php` | `encrypt()`/`decrypt()` with `aes-256-gcm` (`base64(iv . tag . ciphertext)`, sha256 key), `decryptLegacy()` fallback for legacy CBC ciphertexts. `encode()`/`decode()` deprecated (aliases). Statics `hash()`, `salt()`, `random()`, `uuid()`, `otp()`, `email()`, `passwordHash()`, `passwordVerify()` |
+| `Password.php` | Deprecated. Facade: `hash()`/`verify()` delegate to `Crypto::passwordHash()`/`passwordVerify()` with the cost from `setCost()`. `setSalt()` has no effect |
+| `Hash.php` | Deprecated. Static facade: each method delegates to `Crypto` (`make()` → `Crypto::hash()`, because `Crypto::make()`, also deprecated, builds an instance) |
 
 ## Tests
 
-- PHPUnit 9.5. Un fichier par classe dans `tests/`.
-- Les classes de test n'ont pas de namespace. Les méthodes s'appellent `testPhraseEnCamelCase`, les assertions passent par `self::assertSame`, et des bannières `// ----` séparent les sections.
-- Les clés RSA et EC sont générées dans `JWTTest::setUpBeforeClass()` avec `openssl_pkey_new()` : aucune clé n'est versionnée.
-- `JWT::$timestamp` et `JWT::$leeway` sont statiques : `JWTTest::tearDown()` les remet à `0` et `30`.
-- Les warnings PHP attendus (sel ignoré, IV trop long) sont capturés par `set_error_handler()`, pas par `expectWarning()`.
+- PHPUnit 9.5. One file per class in `tests/`.
+- Test classes have no namespace. Methods are named `testSentenceInCamelCase`, assertions use `self::assertSame`, and `// ----` banners separate sections.
+- RSA and EC keys are generated in `JWTTest::setUpBeforeClass()` with `openssl_pkey_new()`: no key is committed.
+- `JWT::$timestamp` and `JWT::$leeway` are static: `JWTTest::tearDown()` resets them to `0` and `30`.
+- PHP warnings are captured with `set_error_handler()`, not `expectWarning()`.
+- Tests use short HMAC secrets (`'secret'`): `tests/bootstrap.php` sets `JWT::$shortKeyWarned` to `true` by reflection, and the "Short HMAC secrets" tests re-arm it.
 
-## Conventions du code
+## Code conventions
 
-Respecter le style existant, sans le « moderniser » au passage :
-- pas de `declare(strict_types=1)` ;
-- constantes de classe sans visibilité ;
-- `if` d'une ligne sans accolades tolérés ;
-- docblocks `@return static`, commentaires mélangeant anglais et français.
+Follow the existing style, without "modernising" it along the way:
+- no `declare(strict_types=1)`;
+- class constants without visibility;
+- one-line `if` without braces allowed;
+- `@return static` docblocks, comments in English.
 
-Une modification de comportement doit être répercutée dans `skills/pebble-security/` (SKILL.md, `references/api-reference.md`, `references/gotchas.md`) et dans le `README.md`.
+Any behavior change must be reflected in `skills/pebble-security/` (SKILL.md, `references/api-reference.md`, `references/gotchas.md`) and in `README.md`. All documentation is in English.
 
-Corriger `JWT` (signature ES*, `$expectedAlg` obligatoire) ou `Crypto` (IV aléatoire, MAC) **change le format** des tokens ou des chiffrés : les données existantes ne seront plus lisibles. Prévoir une version majeure ou un mode de compatibilité.
+A change to `JWT` that **changes the token format** (e.g. making `$expectedAlg` mandatory, which is not needed since `verify()` binds the key to the algorithm family) makes existing tokens unreadable. Plan a major version or a compatibility mode, like the DER fallback of `JWT::verify()` for legacy ES* signatures or `Crypto::decryptLegacy()` for legacy ciphertexts.
 
-## Bugs connus
+Do not touch the CBC fixtures in `tests/CryptoTest.php`: they were produced by the old `encode()` and guarantee that existing data stays readable.
 
-Ils sont listés dans [`TODO.md`](TODO.md). Chacun est **figé par un test** annoté `// BUG:` qui vérifie le comportement *actuel*, dans la section « Known bugs » du fichier de test de la classe concernée.
+## Known bugs
 
-Pour corriger un bug :
-1. Corriger `src/`.
-2. Réécrire le test `// BUG:` pour qu'il vérifie le comportement attendu.
-3. Mettre à jour l'entrée « (bug) » de `skills/pebble-security/references/gotchas.md` et le SKILL.md.
-4. Retirer l'entrée de `TODO.md` (il ne liste que ce qui reste à faire).
+They are listed in [`TODO.md`](TODO.md). Each one is **pinned by a test** annotated `// BUG:` that checks the *current* behavior, in the "Known bugs" section of the test file of the class concerned.
+
+To fix a bug:
+1. Fix `src/`.
+2. Rewrite the `// BUG:` test so it checks the expected behavior.
+3. Update the "(bug)" entry in `skills/pebble-security/references/gotchas.md` and SKILL.md.
+4. Remove the entry from `TODO.md` (it only lists what remains to be done).

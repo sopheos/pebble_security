@@ -1,5 +1,6 @@
 <?php
 
+use Pebble\Security\Crypto;
 use Pebble\Security\Password;
 use PHPUnit\Framework\TestCase;
 
@@ -36,13 +37,8 @@ class PasswordTest extends TestCase
         self::assertFalse($password->verify(null, null));
     }
 
-    // -------------------------------------------------------------------------
-    // Known bugs (see TODO.md)
-    // -------------------------------------------------------------------------
-
-    public function testSaltIsIgnoredWithAWarning()
+    public function testSaltIsIgnoredWithoutWarning()
     {
-        // BUG: setSalt() feeds the 'salt' option to password_hash(), ignored since PHP 8.0.
         $warnings = [];
         set_error_handler(function ($no, $str) use (&$warnings) {
             $warnings[] = $str;
@@ -55,16 +51,23 @@ class PasswordTest extends TestCase
             restore_error_handler();
         }
 
-        self::assertCount(1, $warnings);
-        self::assertStringContainsString('"salt" option has been ignored', $warnings[0]);
+        self::assertSame([], $warnings);
+        self::assertStringStartsWith('$2y$04$', $hash);
         self::assertTrue(password_verify('x', $hash));
     }
 
-    public function testPasswordZeroNeverVerifies()
+    public function testPasswordIsADeprecatedFacadeOfCrypto()
     {
-        // BUG: verify() starts with `!$password`, so the password '0' is always rejected.
-        $hash = password_hash('0', PASSWORD_BCRYPT, ['cost' => 4]);
+        $hash = Crypto::passwordHash('x', 4);
 
-        self::assertFalse((new Password())->verify('0', $hash));
+        self::assertTrue((new Password())->verify('x', $hash));
+        self::assertTrue(Crypto::passwordVerify('x', (new Password())->setCost(4)->hash('x')));
+    }
+
+    public function testPasswordZeroVerifies()
+    {
+        $hash = (new Password())->setCost(4)->hash('0');
+
+        self::assertTrue((new Password())->verify('0', $hash));
     }
 }

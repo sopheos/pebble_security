@@ -3,31 +3,27 @@
 namespace Pebble\Security;
 
 /**
- * Description of Password
+ * Password
  *
+ * @deprecated use Crypto::passwordHash() and Crypto::passwordVerify()
  * @author mathieu
  */
 class Password
 {
 
-    private $salt;
-    private $cost;
+    private mixed $cost = null;
 
     // -------------------------------------------------------------------------
 
     /**
-     * Set a salt for password hash
+     * No effect: password_hash() ignores the salt option since PHP 8.0
      *
+     * @deprecated no effect
      * @param string $salt
      * @return \Pebble\Security\Password
      */
     public function setSalt($salt)
     {
-
-        if ($salt) {
-            $this->salt = $salt;
-        }
-
         return $this;
     }
 
@@ -36,12 +32,13 @@ class Password
     /**
      * Set a cost for password hash
      *
+     * @deprecated pass the cost to Crypto::passwordHash()
      * @param int $cost
      * @return \Pebble\Security\Password
      */
     public function setCost($cost)
     {
-        if ($cost) {
+        if (($cost = (int) $cost)) {
             $this->cost = $cost;
         }
 
@@ -53,22 +50,13 @@ class Password
     /**
      * Return a password hash
      *
+     * @deprecated use Crypto::passwordHash()
      * @param string $password
      * @return string
      */
     public function hash($password)
     {
-        $options = [];
-
-        if (isset($this->salt)) {
-            $options['salt'] = $this->salt;
-        }
-
-        if (isset($this->cost)) {
-            $options['cost'] = $this->cost;
-        }
-
-        return password_hash($password ?? "", PASSWORD_BCRYPT, $options);
+        return Crypto::passwordHash((string) $password, $this->cost);
     }
 
     // -------------------------------------------------------------------------
@@ -76,17 +64,14 @@ class Password
     /**
      * Verify if a password and a hash corresponds
      *
+     * @deprecated use Crypto::passwordVerify()
      * @param string $password
      * @param string $hash
      * @return boolean
      */
     public function verify($password, $hash)
     {
-        if (!$password || !$hash) {
-            return false;
-        }
-
-        return password_verify($password, $hash);
+        return Crypto::passwordVerify((string) $password, (string) $hash);
     }
 
     // -------------------------------------------------------------------------

@@ -10,3 +10,6 @@ setlocale(LC_NUMERIC, 'C');
 ini_set('date.timezone', 'Europe/Paris');
 
 require __DIR__ . '/../vendor/autoload.php';
+
+// Tests use short HMAC secrets on purpose: silence the one-time deprecation (see JWTTest "Short HMAC secrets")
+(new ReflectionProperty(Pebble\Security\JWT::class, 'shortKeyWarned'))->setValue(null, true);

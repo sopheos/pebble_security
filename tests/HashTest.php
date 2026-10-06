@@ -1,92 +1,120 @@
 <?php
 
+use Pebble\Security\Crypto;
 use Pebble\Security\Hash;
 use PHPUnit\Framework\TestCase;
 
 class HashTest extends TestCase
 {
     // -------------------------------------------------------------------------
-    // make / salt / random
+    // hash / salt / random
     // -------------------------------------------------------------------------
 
-    public function testMakePicksTheAlgorithmFromTheLength()
+    public function testHashPicksTheAlgorithmFromTheLength()
     {
-        self::assertSame(md5('x'), Hash::make('x', 32));
-        self::assertSame(sha1('x'), Hash::make('x'));
-        self::assertSame(hash('sha256', 'x'), Hash::make('x', 64));
-        self::assertSame(128, strlen(Hash::make('x', 128)));
+        self::assertSame(md5('x'), Crypto::hash('x', 32));
+        self::assertSame(sha1('x'), Crypto::hash('x'));
+        self::assertSame(hash('sha256', 'x'), Crypto::hash('x', 64));
+        self::assertSame(128, strlen(Crypto::hash('x', 128)));
     }
 
-    public function testMakeFallsBackToSha1ForUnknownLengths()
+    public function testHashFallsBackToSha1ForUnknownLengths()
     {
-        self::assertSame(sha1('x'), Hash::make('x', 12));
+        self::assertSame(sha1('x'), Crypto::hash('x', 12));
     }
 
     public function testSaltLengthFollowsTheSameFallback()
     {
-        self::assertSame(64, strlen(Hash::salt(64)));
-        self::assertSame(40, strlen(Hash::salt(10)));
+        self::assertSame(64, strlen(Crypto::salt(64)));
+        self::assertSame(40, strlen(Crypto::salt(10)));
     }
 
     public function testRandomReturnsHexOfTheRequestedLength()
     {
-        self::assertMatchesRegularExpression('/^[0-9a-f]{7}$/', Hash::random(7));
-        self::assertNotSame(Hash::random(), Hash::random());
+        self::assertMatchesRegularExpression('/^[0-9a-f]{7}$/', Crypto::random(7));
+        self::assertNotSame(Crypto::random(), Crypto::random());
     }
 
     // -------------------------------------------------------------------------
-    // otp / email
+    // uuid / otp / email
     // -------------------------------------------------------------------------
+
+    public function testUuidIsAnRfc9562Version7()
+    {
+        $uuid = Crypto::uuid();
+
+        self::assertMatchesRegularExpression('/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/', $uuid);
+    }
+
+    public function testUuidStartsWithTheMillisecondTimestamp()
+    {
+        $before = (int) (microtime(true) * 1000);
+        $uuid = Crypto::uuid();
+        $after = (int) (microtime(true) * 1000);
+
+        $ms = hexdec(substr($uuid, 0, 8) . substr($uuid, 9, 4));
+
+        self::assertGreaterThanOrEqual($before, $ms);
+        self::assertLessThanOrEqual($after, $ms);
+    }
 
     public function testOtpIsZeroPaddedDigits()
     {
-        self::assertMatchesRegularExpression('/^[0-9]{6}$/', Hash::otp());
-        self::assertMatchesRegularExpression('/^[0-9]{4}$/', Hash::otp(4));
+        self::assertMatchesRegularExpression('/^[0-9]{6}$/', Crypto::otp());
+        self::assertMatchesRegularExpression('/^[0-9]{4}$/', Crypto::otp(4));
+    }
+
+    public function testOtpIsNotSeededByMtSrand()
+    {
+        $codes = [];
+        for ($i = 0; $i < 5; $i++) {
+            mt_srand(42);
+            $codes[Crypto::otp(18)] = true;
+        }
+        mt_srand();
+
+        self::assertGreaterThan(1, count($codes));
+    }
+
+    public function testOtpRejectsOutOfRangeLengths()
+    {
+        $this->expectException(\ValueError::class);
+
+        Crypto::otp(19);
     }
 
     public function testEmailHashesNameAndDomainButKeepsTheTld()
     {
-        self::assertSame(sha1('john') . '@' . sha1('mail.co') . '.uk', Hash::email('john@mail.co.uk'));
-        self::assertNull(Hash::email('not-an-email'));
+        self::assertSame(sha1('john') . '@' . sha1('mail.co') . '.uk', Crypto::email('john@mail.co.uk'));
+        self::assertNull(Crypto::email('not-an-email'));
     }
 
     // -------------------------------------------------------------------------
-    // Known bugs (see TODO.md)
+    // Deprecated Hash facade
     // -------------------------------------------------------------------------
 
-    public function testOtpUsesMtRand()
+    public function testHashIsADeprecatedFacadeOfCrypto()
     {
-        // BUG: otp() uses mt_rand(), which is seedable and predictable.
-        mt_srand(42);
-        $first = Hash::otp();
-        mt_srand(42);
-        $second = Hash::otp();
-        mt_srand();
+        self::assertNotInstanceOf(Crypto::class, new Hash());
+        self::assertStringContainsString('@deprecated', (new ReflectionClass(Hash::class))->getDocComment());
 
-        self::assertSame($first, $second);
-    }
-
-    public function testUuidStartsWithTheUniqidTimestamp()
-    {
-        // BUG: uuid() is built on uniqid(); the first 8 hex digits are the Unix time.
-        $before = time();
-        $uuid = Hash::uuid();
-        $after = time();
-
-        self::assertMatchesRegularExpression('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $uuid);
-        self::assertGreaterThanOrEqual($before, hexdec(substr($uuid, 0, 8)));
-        self::assertLessThanOrEqual($after, hexdec(substr($uuid, 0, 8)));
-    }
-
-    public function testUuidVersionCharacterIsNotAlways4()
-    {
-        // BUG: no RFC 4122 version/variant bits are set; the version slot holds a uniqid digit.
-        $versions = [];
-        for ($i = 0; $i < 64; $i++) {
-            $versions[Hash::uuid()[14]] = true;
-            usleep(1);
+        foreach ((new ReflectionClass(Hash::class))->getMethods() as $method) {
+            self::assertStringContainsString('@deprecated', $method->getDocComment(), $method->getName());
         }
+    }
 
-        self::assertGreaterThan(1, count($versions));
+    public function testHashMakeStillReturnsAHash()
+    {
+        self::assertSame(sha1('x'), Hash::make('x'));
+        self::assertSame(md5('x'), Hash::make('x', 32));
+    }
+
+    public function testHashStaticHelpersDelegateToCrypto()
+    {
+        self::assertSame(40, strlen(Hash::salt()));
+        self::assertSame(7, strlen(Hash::random(7)));
+        self::assertSame(36, strlen(Hash::uuid()));
+        self::assertSame(6, strlen(Hash::otp()));
+        self::assertSame(Crypto::email('a@b.fr'), Hash::email('a@b.fr'));
     }
 }

@@ -45,7 +45,7 @@ class Token
      */
     public function init(array $payload = []): static
     {
-        $this->uuid = $payload['uuid'] ?? Hash::uuid();
+        $this->uuid = $payload['uuid'] ?? Crypto::uuid();
         $this->payload = $payload;
         $this->add('uuid', $this->uuid);
         $this->add('hash', $this->hash);
@@ -171,7 +171,9 @@ class Token
             throw TokenException::invalid();
         }
 
-        if ($this->hash && $this->hash !== ($data['hash'] ?? null)) {
+        $hash = $data['hash'] ?? null;
+
+        if ($this->hash && (!is_string($hash) || !hash_equals($this->hash, $hash))) {
             throw TokenException::invalid();
         }
 
@@ -206,13 +208,7 @@ class Token
      */
     public static function parseToken(string $token): string
     {
-        $matches = [];
-
-        if (preg_match('/bearer\s((.*)\.(.*)\.(.*))/i', $token, $matches)) {
-            return $matches[1];
-        }
-
-        return $token;
+        return JWT::getBearerToken($token);
     }
 
     // -------------------------------------------------------------------------

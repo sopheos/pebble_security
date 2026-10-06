@@ -3,8 +3,8 @@
 namespace Pebble\Security;
 
 /**
- * JSON Web Token implementation, based on this spec:
- * http://tools.ietf.org/html/draft-ietf-oauth-json-web-token-06
+ * JSON Web Token implementation, based on RFC 7519 (JWT) and RFC 7518 (JWA):
+ * https://www.rfc-editor.org/rfc/rfc7519
  */
 class JWT
 {
@@ -34,9 +34,9 @@ class JWT
     public static int $timestamp = 0;
 
     /**
-     * Supported algorithm for HMAC
+     * Supported algorithms (HMAC, RSA, ECDSA): hash_hmac() algo or openssl constant
      */
-    private static $algs = [
+    private static array $algs = [
         self::HS256 => 'sha256',
         self::HS384 => 'sha384',
         self::HS512 => 'sha512',
@@ -46,6 +46,29 @@ class JWT
         self::ES256 => OPENSSL_ALGO_SHA256,
         self::ES384 => OPENSSL_ALGO_SHA384,
         self::ES512 => OPENSSL_ALGO_SHA512,
+    ];
+
+    /**
+     * ECDSA: size in bytes of R and S in a raw R||S signature (RFC 7518 §3.4)
+     */
+    private static array $ecSizes = [
+        self::ES256 => 32,
+        self::ES384 => 48,
+        self::ES512 => 66,
+    ];
+
+    /**
+     * Set once the short HMAC secret deprecation has been raised
+     */
+    private static bool $shortKeyWarned = false;
+
+    /**
+     * ECDSA: curve expected for each algorithm (RFC 7518 §3.4)
+     */
+    private static array $ecCurves = [
+        self::ES256 => 'prime256v1',
+        self::ES384 => 'secp384r1',
+        self::ES512 => 'secp521r1',
     ];
 
     /**
@@ -66,7 +89,7 @@ class JWT
         ?string $keyId = null,
         ?array $head = null
     ) {
-        $header = ['typ' => 'JWT', 'alg' => $algo];
+        $header = ['typ' => 'JWT', 'alg' => $algo = self::alg($algo)];
 
         if ($keyId) {
             $header['kid'] = $keyId;
@@ -103,16 +126,18 @@ class JWT
 
         list($headb64, $bodyb64,, $header, $payload, $sign) = self::parse($jwt);
 
-        if (! ($alg = self::a($header, 'alg'))) {
+        // Header parameters and claims are case-sensitive (RFC 7515 §4, RFC 7519 §4): only lower-case names are read
+
+        if (! ($alg = $header['alg'] ?? null)) {
             throw new Exception('Empty algorithm');
         }
 
-        if (! self::a(self::$algs, $alg)) {
+        if (! is_string($alg) || ! isset(self::$algs[$alg = self::alg($alg)])) {
             throw new Exception('Algorithm not supported');
         }
 
         // Never trust the header alg: prevents algorithm confusion attacks
-        if ($expectedAlg && $alg !== $expectedAlg) {
+        if ($expectedAlg && $alg !== self::alg($expectedAlg)) {
             throw new Exception('Unexpected algorithm');
         }
 
@@ -125,19 +150,19 @@ class JWT
 
         // Check if the nbf if it is defined. This is the time that the
         // token can actually be used. If it's not yet that time, abort.
-        if (($nbf = self::a($payload, 'nbf')) && $nbf > ($timestamp + self::$leeway)) {
-            throw new Exception('Cannot handle token prior to ' . date('c', $nbf));
+        if (($nbf = self::numericDate($payload, 'nbf')) !== null && $nbf > ($timestamp + self::$leeway)) {
+            throw new Exception('Cannot handle token prior to ' . date('c', (int) $nbf));
         }
 
         // Check that this token has been created before 'now'. This prevents
         // using tokens that have been created for later use (and haven't
         // correctly used the nbf claim).
-        if (($iat = self::a($payload, 'iat')) && $iat > ($timestamp + self::$leeway)) {
-            throw new Exception('Cannot handle token prior to ' . date('c', $iat));
+        if (($iat = self::numericDate($payload, 'iat')) !== null && $iat > ($timestamp + self::$leeway)) {
+            throw new Exception('Cannot handle token prior to ' . date('c', (int) $iat));
         }
 
         // Check if this token has expired.
-        if (($exp = self::a($payload, 'exp')) && ($timestamp - self::$leeway) >= $exp) {
+        if (($exp = self::numericDate($payload, 'exp')) !== null && ($timestamp - self::$leeway) >= $exp) {
             throw new Exception('Expired token');
         }
 
@@ -164,7 +189,8 @@ class JWT
             throw new Exception('Invalid segment encoding');
         }
 
-        if (!($payload = self::jsonDecode(self::urlsafeB64Decode($bodyb64)))) {
+        // An empty payload is valid, only invalid JSON is rejected
+        if (!is_array($payload = json_decode(self::urlsafeB64Decode($bodyb64), true))) {
             throw new Exception('Invalid segment encoding');
         }
 
@@ -179,7 +205,7 @@ class JWT
      * Get access token from header
      *
      * @param string $token
-     * @return string|null
+     * @return string
      */
     public static function getBearerToken(string $token): string
     {
@@ -203,7 +229,7 @@ class JWT
      */
     public static function sign($msg, $key, $alg = self::HS256)
     {
-        if (! ($algo = self::a(self::$algs, $alg))) {
+        if (! ($algo = self::$algs[$alg = self::alg($alg)] ?? null)) {
             throw new Exception('Algorithm not supported');
         }
 
@@ -216,13 +242,18 @@ class JWT
             throw new Exception('Error signing the JWT');
         }
 
+        // openssl returns DER, JWS requires raw R||S
+        if (($size = self::$ecSizes[$alg] ?? null)) {
+            $signature = self::derToRaw($signature, $size);
+        }
+
         return $signature;
     }
 
     /**
      * Verify a signature
      *
-     * @param string $data
+     * @param string $msg
      * @param string $signature
      * @param string $key
      * @param string $alg
@@ -231,15 +262,128 @@ class JWT
      */
     public static function verify(string $msg, string $signature, string $key, string $alg = self::HS256): bool
     {
-        if (! ($algo = self::a(self::$algs, $alg))) {
+        if (! ($algo = self::$algs[$alg = self::alg($alg)] ?? null)) {
             throw new Exception('Algorithm not supported');
         }
 
+        // The key decides the algorithm family, never the token header:
+        // a public PEM is not an HMAC secret, and an HMAC secret is not an openssl key
         if (self::isHmac($alg)) {
-            return self::hmac($algo, $msg, $key) === $signature;
+            return !self::isPem($key) && hash_equals(self::hmac($algo, $msg, $key), $signature);
         }
 
+        if (!self::isKeyOf($key, $alg)) {
+            return false;
+        }
+
+        if (($size = self::$ecSizes[$alg] ?? null) && strlen($signature) === 2 * $size) {
+            if (openssl_verify($msg, self::rawToDer($signature), $key, $algo) === 1) {
+                return true;
+            }
+        }
+
+        // RSA, or ECDSA signature in DER issued before the switch to R||S
+        // @deprecated DER fallback: remove once legacy ES* tokens have expired
         return openssl_verify($msg, $signature, $key, $algo) === 1;
+    }
+
+    /**
+     * Convert a DER ECDSA signature (SEQUENCE of two INTEGER) to raw R||S
+     *
+     * @param string $der
+     * @param int $size
+     * @return string
+     * @throws Exception
+     */
+    private static function derToRaw(string $der, int $size): string
+    {
+        $offset = 0;
+
+        if (self::derRead($der, $offset, 0x30) === null) {
+            throw new Exception('Invalid ECDSA signature');
+        }
+
+        $raw = '';
+
+        foreach ([0, 1] as $i) {
+            $int = self::derRead($der, $offset, 0x02);
+
+            if ($int === null) {
+                throw new Exception('Invalid ECDSA signature');
+            }
+
+            $raw .= str_pad(ltrim($int, "\0"), $size, "\0", STR_PAD_LEFT);
+        }
+
+        return $raw;
+    }
+
+    /**
+     * Convert a raw R||S ECDSA signature to DER
+     *
+     * @param string $raw
+     * @return string
+     */
+    private static function rawToDer(string $raw): string
+    {
+        $der = '';
+
+        foreach (str_split($raw, intdiv(strlen($raw), 2)) as $int) {
+            $int = ltrim($int, "\0");
+
+            // INTEGER is signed: keep it positive
+            if ($int === '' || ord($int[0]) > 0x7f) {
+                $int = "\0" . $int;
+            }
+
+            $der .= "\x02" . self::derLength(strlen($int)) . $int;
+        }
+
+        return "\x30" . self::derLength(strlen($der)) . $der;
+    }
+
+    /**
+     * Read a DER element of the expected tag, return its content and move the offset.
+     * A SEQUENCE is entered: the offset points to its first child.
+     *
+     * @param string $der
+     * @param int $offset
+     * @param int $tag
+     * @return string|null
+     */
+    private static function derRead(string $der, int &$offset, int $tag): ?string
+    {
+        if ($offset + 2 > strlen($der) || ord($der[$offset]) !== $tag) {
+            return null;
+        }
+
+        $len = ord($der[$offset + 1]);
+        $offset += 2;
+
+        // Long form: 0x81 followed by one length byte (enough for ES512)
+        if ($len === 0x81) {
+            if ($offset >= strlen($der)) return null;
+            $len = ord($der[$offset++]);
+        } elseif ($len > 0x7f) {
+            return null;
+        }
+
+        if ($offset + $len > strlen($der)) {
+            return null;
+        }
+
+        $content = substr($der, $offset, $len);
+
+        if ($tag !== 0x30) {
+            $offset += $len;
+        }
+
+        return $content;
+    }
+
+    private static function derLength(int $len): string
+    {
+        return $len > 0x7f ? "\x81" . chr($len) : chr($len);
     }
 
     private static function jsonDecode(string $input): array
@@ -268,9 +412,25 @@ class JWT
         return str_replace('=', '', strtr(base64_encode($input), '+/', '-_'));
     }
 
-    private static function a(array $input, string $key): mixed
+    /**
+     * Reads a time claim. Absent or null means "not set"; any other value must be
+     * a number (numeric strings are accepted), so 0 is a real date, not "not set".
+     *
+     * @throws Exception The claim is not a number
+     */
+    private static function numericDate(array $payload, string $name): int|float|null
     {
-        return $input[$key] ?? $input[mb_strtoupper($key)] ?? null;
+        if (($value = $payload[$name] ?? null) === null) return null;
+        if (is_bool($value) || !is_numeric($value)) throw new Exception("Invalid claim {$name}");
+        return $value + 0;
+    }
+
+    /**
+     * Algorithm names are matched case-insensitively: 'hs256' is HS256
+     */
+    private static function alg(string $alg): string
+    {
+        return strtoupper($alg);
     }
 
     private static function isHmac(string $alg)
@@ -278,8 +438,35 @@ class JWT
         return str_contains($alg, 'HS');
     }
 
+    private static function isPem(string $key): bool
+    {
+        return str_contains($key, '-----BEGIN');
+    }
+
+    /**
+     * Whether $key is a public key (or certificate) matching $alg: RSA for RS*, the right curve for ES*
+     */
+    private static function isKeyOf(string $key, string $alg): bool
+    {
+        if (!($details = ($pkey = openssl_pkey_get_public($key)) ? openssl_pkey_get_details($pkey) : false)) {
+            return false;
+        }
+
+        if (($curve = self::$ecCurves[$alg] ?? null)) {
+            return $details['type'] === OPENSSL_KEYTYPE_EC && ($details['ec']['curve_name'] ?? null) === $curve;
+        }
+
+        return $details['type'] === OPENSSL_KEYTYPE_RSA;
+    }
+
     private static function hmac(string $algo, string $msg, string $key): string
     {
+        // RFC 7518 §3.2: the secret must be at least as long as the hash output. Warn once per process
+        if (!self::$shortKeyWarned && strlen($key) < ($bytes = intdiv((int) substr($algo, 3), 8))) {
+            self::$shortKeyWarned = true;
+            trigger_error('Pebble\\Security\\JWT: an HS' . substr($algo, 3) . " secret shorter than {$bytes} bytes is deprecated and will be rejected in the next major version", E_USER_DEPRECATED);
+        }
+
         return hash_hmac($algo, $msg, $key, true);
     }
 }

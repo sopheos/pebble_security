@@ -1,8 +1,8 @@
 # Pebble/Security
 
-Outils de sécurité de sopheos pour PHP 8.1+ : JWT (HS*, RS*, ES*), tokens applicatifs, chiffrement symétrique, mots de passe bcrypt et fonctions de hachage.
+Security tools from sopheos for PHP 8.1+: JWT (HS*, RS*, ES*), application tokens, symmetric encryption, bcrypt passwords and hashing helpers.
 
-La lib n'a aucune dépendance Composer. Elle s'appuie sur les extensions `openssl` et `mbstring`. Plusieurs faiblesses de sécurité sont connues et listées dans [`TODO.md`](TODO.md) : lire la section « Sécurité » avant d'utiliser `Crypto`, `Hash::otp()`, `Hash::uuid()` ou les algorithmes ES*.
+The library has no Composer dependency. It relies on the `openssl` and `mbstring` extensions. Known bugs and debt are listed in [`TODO.md`](TODO.md).
 
 ## Installation
 
@@ -12,30 +12,33 @@ composer require sopheos/pebble_security
 
 ## Claude Code
 
-Ce package fournit un skill Claude Code dans [`skills/pebble-security/`](skills/pebble-security/). Il documente les patterns d'usage et les pièges de la librairie : toujours passer l'algorithme attendu à `JWT::decode()`, signatures ES* non interopérables, `Crypto` déterministe et sans MAC, OTP et UUID non sûrs, etc.
+This package ships a Claude Code skill in [`skills/pebble-security/`](skills/pebble-security/). It documents the library's usage patterns and pitfalls: key/algorithm binding in `JWT`, passing the expected algorithm to `JWT::decode()`, ES* signature format, `Hash` and `Password` deprecated in favor of `Crypto`, reading legacy ciphertexts, etc.
 
-Dans un projet qui dépend de `sopheos/pebble_security`, copie-le une fois dans `.claude/skills/` après `composer install` pour que Claude Code le charge automatiquement. Le nom du dossier doit correspondre au `name` déclaré dans `SKILL.md` :
+In a project that depends on `sopheos/pebble_security`, copy it once into `.claude/skills/` after `composer install` so Claude Code loads it automatically. The folder name must match the `name` declared in `SKILL.md`:
 
 ```bash
 cp -r vendor/sopheos/pebble_security/skills/pebble-security .claude/skills/pebble-security
 ```
 
-Pour la maintenance de la lib elle-même, voir [`CLAUDE.md`](CLAUDE.md). Les bugs connus sont listés dans [`TODO.md`](TODO.md).
+To maintain the library itself, see [`CLAUDE.md`](CLAUDE.md). Known bugs are listed in [`TODO.md`](TODO.md).
 
 ## JWT
 
-`\Pebble\Security\JWT` ne contient que des méthodes statiques. Les erreurs lèvent `\Pebble\Security\Exception`.
+`\Pebble\Security\JWT` only has static methods. Errors throw `\Pebble\Security\Exception`.
 
-* `encode(array $payload, string $key, string $algo = JWT::HS256, ?string $keyId = null, ?array $head = null) : string` Signe le payload. `$keyId` ajoute `kid` au header, `$head` y fusionne des champs. Pour RS*/ES*, `$key` est la clé privée PEM.
-* `decode(string $jwt, string $key, bool $verify = true, ?string $expectedAlg = null) : array` Vérifie la signature, puis `nbf`, `iat` et `exp`, et renvoie le payload. Le préfixe `Bearer ` est accepté. **Toujours passer `$expectedAlg`** : sans lui, l'algorithme du header est cru sur parole (confusion d'algorithme). Pour RS*/ES*, `$key` est la clé publique PEM.
-* `parse(string $jwt) : array` Découpe sans vérifier : `[$headb64, $bodyb64, $cryptob64, $header, $payload, $signature]`.
-* `getBearerToken(string $token) : string` Retire le préfixe `Bearer `.
-* `sign($msg, $key, $alg = JWT::HS256) : string` Signature binaire brute.
-* `verify(string $msg, string $signature, string $key, string $alg = JWT::HS256) : bool` Vérifie une signature.
-* `JWT::$leeway` Tolérance d'horloge en secondes (30 par défaut).
-* `JWT::$timestamp` Horodatage forcé pour les tests (`0` = `time()`).
+* `encode(array $payload, string $key, string $algo = JWT::HS256, ?string $keyId = null, ?array $head = null) : string` Signs the payload. `$keyId` adds `kid` to the header, `$head` merges fields into it. For RS*/ES*, `$key` is the private PEM key.
+* `decode(string $jwt, string $key, bool $verify = true, ?string $expectedAlg = null) : array` Verifies the signature, then `nbf`, `iat` and `exp`, and returns the payload. These claims must be numbers (numeric strings accepted, `null` = not set), else "Invalid claim …"; `0` is a real date, so `exp: 0` is expired. The `Bearer ` prefix is accepted. For RS*/ES*, `$key` is the public PEM key (or certificate). The key decides the algorithm family (see `verify()`), so a token signed with another family is rejected even without `$expectedAlg`. Passing `$expectedAlg` is still recommended: it also pins the exact algorithm (`HS256` vs `HS512`).
+* `parse(string $jwt) : array` Splits without verifying: `[$headb64, $bodyb64, $cryptob64, $header, $payload, $signature]`.
+* `getBearerToken(string $token) : string` Strips the `Bearer ` prefix.
+* `sign($msg, $key, $alg = JWT::HS256) : string` Raw binary signature.
+* `verify(string $msg, string $signature, string $key, string $alg = JWT::HS256) : bool` Verifies a signature. `verify()` binds the algorithm family to the key: an HS* signature is never checked against a PEM, and an RS*/ES* signature only against a public key (or certificate) of the right type and curve (RSA for RS*; P-256, P-384, P-521 for ES256/384/512). A mismatch is a plain verification failure, without PHP warning.
+* `JWT::$leeway` Clock tolerance in seconds (30 by default).
 
-Algorithmes : `HS256`, `HS384`, `HS512`, `RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`. Les signatures ES* sont produites au format DER et non R||S : elles ne sont pas interopérables avec les autres libs JWT.
+HMAC secrets should be at least as long as the hash output (RFC 7518 §3.2): 32 bytes for HS256, 48 for HS384, 64 for HS512. A shorter secret still works but raises an `E_USER_DEPRECATED` (once per process) and will be rejected in the next major version. Generate one with `Crypto::random(64)` (64 hex characters, 32 bytes of entropy).
+
+* `JWT::$timestamp` Forced timestamp for tests (`0` = `time()`).
+
+Algorithms: `HS256`, `HS384`, `HS512`, `RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`. Names are case-insensitive everywhere (`encode()`, `decode()` header and `$expectedAlg`, `sign()`, `verify()`): `hs256` is `HS256`, and `encode()` always writes the upper-case name in the header. Header parameter and claim **names** are case-sensitive and read in lower case only: `ALG` or `EXP` are ordinary fields, not `alg` or `exp`. ES* signatures use the raw R||S format of RFC 7518, like other JWT libraries. During a transition period, `verify()` also accepts the DER signatures produced by earlier versions.
 
 ```php
 use Pebble\Security\JWT;
@@ -46,17 +49,17 @@ $payload = JWT::decode($jwt, $secret, true, JWT::HS256);
 
 ## Token
 
-`\Pebble\Security\Token` encapsule un payload JWT avec un `uuid` et, en option, une preuve (`proof`) dont le sha1 est stocké dans le claim `hash`. Les erreurs lèvent `\Pebble\Security\TokenException` (`token_required` ou `token_invalid`).
+`\Pebble\Security\Token` wraps a JWT payload with a `uuid` and, optionally, a proof (`proof`) whose sha1 is stored in the `hash` claim. Errors throw `\Pebble\Security\TokenException` (`token_required` or `token_invalid`).
 
-* `__construct(string $url, string $key, string $alg, ?string $proof = null)` Initialise un payload avec un nouvel `uuid`.
-* `init(array $payload = []) : static` Remplace le payload (garde son `uuid` s'il en a un) et réinjecte `uuid` et `hash`.
-* `add(string $name, $value) : static` Ajoute un claim. `null` le supprime.
-* `del(string $name) : static` Supprime un claim.
-* `get(string $name, mixed $default = null) : mixed` Lit un claim.
-* `url()`, `key()`, `alg()`, `uuid()`, `proof()`, `hash()`, `payload()` Accesseurs.
-* `generate(int $exp = 0) : string` Ajoute `iat` (et `exp` = maintenant + `$exp` si non nul) puis encode.
-* `import(string $token) : static` Décode avec l'algorithme du constructeur, vérifie la preuve si elle est définie, puis `init()` avec le payload reçu.
-* `parseToken(string $token) : string` Retire le préfixe `Bearer `.
+* `__construct(string $url, string $key, string $alg, ?string $proof = null)` Initialises a payload with a new `uuid`.
+* `init(array $payload = []) : static` Replaces the payload (keeping its `uuid` if it has one) and re-injects `uuid` and `hash`.
+* `add(string $name, $value) : static` Adds a claim. `null` removes it.
+* `del(string $name) : static` Removes a claim.
+* `get(string $name, mixed $default = null) : mixed` Reads a claim.
+* `url()`, `key()`, `alg()`, `uuid()`, `proof()`, `hash()`, `payload()` Accessors.
+* `generate(int $exp = 0) : string` Adds `iat` (and `exp` = now + `$exp` if non-zero), then encodes. Without `$exp`, an existing `exp` is kept on purpose (re-signing does not extend the expiry).
+* `import(string $token) : static` Decodes with the constructor's algorithm, checks the proof if set, then calls `init()` with the received payload.
+* `parseToken(string $token) : string` Strips the `Bearer ` prefix (same as `JWT::getBearerToken()`).
 
 ```php
 use Pebble\Security\JWT;
@@ -72,33 +75,36 @@ $userId = $token->get('user');
 
 ## Crypto
 
-`\Pebble\Security\Crypto` chiffre en `aes-256-cbc` (par défaut) et renvoie du base64.
+`\Pebble\Security\Crypto` encrypts with `aes-256-gcm` (authenticated encryption) and returns `base64(iv . tag . ciphertext)`. The key is derived with sha256.
 
-* `__construct($method = null)` / `make($method = null) : static` Méthode openssl, `aes-256-cbc` par défaut.
-* `encode(string $str, string $key) : string` Chiffre. Renvoie `''` en cas d'échec.
-* `decode(string $str, string $key) : ?string` Déchiffre. Renvoie `null` en cas d'échec, mais aussi pour un clair `'0'` ou vide.
+* `__construct($method = null)` / `make($method = null)` (**deprecated**, use `new Crypto()`) `$method` is obsolete and ignored, kept for compatibility. The `Crypto::METHOD` constant no longer exists.
+* `encrypt(string $str, string $key) : string` Encrypts with a random IV. Returns `''` on failure.
+* `decrypt(string $str, string $key) : ?string` Decrypts. Returns `null` if the key is wrong or the ciphertext was tampered with. Ciphertexts produced before the switch to GCM (`aes-256-cbc`, key-derived IV) are still readable: re-encrypt them with `encrypt()` to migrate.
+* `encode()` / `decode()` (**deprecated**) Aliases of `encrypt()` and `decrypt()`.
 
-**Attention** : l'IV est dérivé de la clé (même message → même chiffré), il n'y a pas de MAC (chiffré modifiable sans détection) et la clé est tronquée à 32 octets. Ne pas l'utiliser pour des données sensibles. Préférer `sodium_crypto_secretbox()`.
+Static methods (formerly on `Hash` and `Password`):
+
+* `hash(string $string, int $length = 40) : string` Hex digest chosen by length: 32 md5, 40 sha1, 64 sha256, 128 sha512. Any other length gives sha1.
+* `salt(int $length = 40) : string` Digest of `random_bytes()`. Same length rule.
+* `random(int $length = 40) : string` Random hex string (`random_bytes`).
+* `uuid() : string` UUID v7 (RFC 9562): millisecond timestamp followed by 74 random bits, sortable.
+* `otp(int $len = 6) : string` Numeric code (`random_int`), zero-padded. Throws `ValueError` outside 1 to 18 digits.
+* `email(string $email) : ?string` `sha1(name)@sha1(domain).tld`, or `null` if the email is invalid. Unkeyed sha1: not designed to resist a dictionary attack.
+* `passwordHash(string $password, ?int $cost = null) : string` `password_hash()` with `PASSWORD_BCRYPT`. Without `$cost`, PHP's default cost.
+* `passwordVerify(string $password, string $hash) : bool` `password_verify()`. Returns `false` if either is empty (`''`).
 
 ## Password
 
-`\Pebble\Security\Password` hache en bcrypt.
+`\Pebble\Security\Password` is **deprecated**. Its methods keep their signature and delegate to `Crypto`:
 
-* `setCost($cost)` Coût bcrypt. Ignoré s'il est falsy.
-* `setSalt($salt)` **Sans effet** depuis PHP 8.0 : `hash()` lève alors un warning.
-* `hash($password) : string` `password_hash()` en `PASSWORD_BCRYPT`.
-* `verify($password, $hash) : bool` `password_verify()`. Renvoie `false` si l'un des deux est vide, y compris pour le mot de passe `'0'`.
+* `setCost($cost)` bcrypt cost, passed to `Crypto::passwordHash()`. Ignored if falsy.
+* `setSalt($salt)` **No effect** (the `salt` option is ignored since PHP 8.0). No longer raises a warning.
+* `hash($password) : string` → `Crypto::passwordHash()`.
+* `verify($password, $hash) : bool` → `Crypto::passwordVerify()`.
 
 ## Hash
 
-`\Pebble\Security\Hash` ne contient que des méthodes statiques.
-
-* `make($string, $length = 40)` Hachage hexadécimal choisi par la longueur : 32 md5, 40 sha1, 64 sha256, 128 sha512. Toute autre longueur donne du sha1.
-* `salt($length = 40)` Hachage de `random_bytes()`. Même règle de longueur.
-* `random(int $length = 40) : string` Chaîne hexadécimale aléatoire (`random_bytes`).
-* `uuid()` Chaîne au format UUID, construite avec `uniqid()` et 19 caractères aléatoires. **Ce n'est pas un UUID v4** : début prévisible, pas de bits de version.
-* `otp(int $len = 6) : string` Code numérique complété par des zéros. **Utilise `mt_rand()`**, non sûr : préférer `random_int()`.
-* `email(string $email) : ?string` `sha1(nom)@sha1(domaine).tld`, ou `null` si l'email est invalide.
+`\Pebble\Security\Hash` is **deprecated**. Its methods keep their signature and delegate to `Crypto`: `make()` → `Crypto::hash()` (`Crypto::make()`, deprecated in favor of `new Crypto()`, builds an instance), `salt()`, `random()`, `uuid()`, `otp()` and `email()` → the method of the same name.
 
 ## Tests
 
@@ -107,4 +113,4 @@ composer install
 vendor/bin/phpunit
 ```
 
-Les clés RSA et EC sont générées à la volée. Les bugs connus sont figés par des tests annotés `// BUG:` qui vérifient le comportement actuel.
+RSA and EC keys are generated on the fly. Known bugs are pinned by tests annotated `// BUG:` that check the current behavior. Legacy `aes-256-cbc` ciphertexts are tested against values produced by the previous version.

@@ -37,6 +37,20 @@ class TokenTest extends TestCase
         self::assertSame($imported->get('iat') + 60, $imported->get('exp'));
     }
 
+    public function testGenerateWithoutExpKeepsTheExistingExpiry()
+    {
+        $token = $this->token();
+        $token->generate(60);
+        $exp = $token->get('exp');
+
+        // Re-signing must not extend the expiry
+        $token->generate();
+        self::assertSame($exp, $token->get('exp'));
+
+        $token->del('exp')->generate();
+        self::assertNull($token->get('exp'));
+    }
+
     public function testAddNullRemovesAKey()
     {
         $token = $this->token()->add('a', 1)->del('a')->add('b', null);
@@ -76,6 +90,14 @@ class TokenTest extends TestCase
         $this->token('device-2')->import($jwt);
     }
 
+    public function testNonStringProofIsRejected()
+    {
+        $jwt = JWT::encode(['uuid' => 'u', 'hash' => ['x']], 'secret', JWT::HS256);
+
+        $this->expectExceptionMessage('token_invalid');
+        $this->token('device-1')->import($jwt);
+    }
+
     public function testImporterWithoutProofAcceptsAnyHashAndDropsIt()
     {
         $jwt = $this->token('device-1')->generate();
@@ -89,5 +111,6 @@ class TokenTest extends TestCase
     {
         self::assertSame('a.b.c', Token::parseToken('bearer a.b.c'));
         self::assertSame('raw', Token::parseToken('raw'));
+        self::assertSame(JWT::getBearerToken('Bearer a.b.c'), Token::parseToken('Bearer a.b.c'));
     }
 }
