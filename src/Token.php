@@ -166,7 +166,7 @@ class Token
 
         // Decodes the token
         try {
-            $data = JWT::decode($token, $this->key);
+            $data = JWT::decode($token, $this->key, true, $this->alg);
         } catch (\Exception $ex) {
             throw TokenException::invalid();
         }

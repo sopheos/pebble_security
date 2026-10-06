@@ -91,10 +91,11 @@ class JWT
      * @param string $jwt The JWT
      * @param string|null $key  The secret key
      * @param bool $verify If false, skip verification process
+     * @param string|null $expectedAlg If set, reject tokens whose header alg differs
      * @return array The JWT's payload as a PHP array
      * @throws Exception Provided JWT was invalid
      */
-    public static function decode(string $jwt, string $key, bool $verify = true): array
+    public static function decode(string $jwt, string $key, bool $verify = true, ?string $expectedAlg = null): array
     {
         if (! $key) {
             throw new Exception('Key may not be empty');
@@ -108,6 +109,11 @@ class JWT
 
         if (! self::a(self::$algs, $alg)) {
             throw new Exception('Algorithm not supported');
+        }
+
+        // Never trust the header alg: prevents algorithm confusion attacks
+        if ($expectedAlg && $alg !== $expectedAlg) {
+            throw new Exception('Unexpected algorithm');
         }
 
         // Check signature
