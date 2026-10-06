@@ -10,7 +10,3 @@ setlocale(LC_NUMERIC, 'C');
 ini_set('date.timezone', 'Europe/Paris');
 
 require __DIR__ . '/../vendor/autoload.php';
-
-foreach (glob(__DIR__ . '/ressources/*.php') as $file) {
-    require $file;
-}
